@@ -82,6 +82,72 @@ def recvall(sock, n):
         data.extend(packet)
     return data
 
+def create_directory(path, overwrite):
+    try:
+        os.makedirs(path)
+        status = "0"
+    except FileExistsError:
+        try:
+            if overwrite == True:
+                shutil.rmtree(path)
+                os.makedirs(path)
+                status = "0"
+            else:
+                status = "8"
+        except PermissionError:
+            status = "2"
+        except NotADirectoryError:
+            try:
+                os.remove(path)
+                os.makedirs(path)
+                status = "0"
+            except PermissionError:
+                status = "2"
+            except Exception:
+                status = "U"
+        except Exception:
+            status = "U"
+    except PermissionError:
+        status = "2"
+    except FileExistsError:
+        status = "8"
+    except FileNotFoundError:
+        status = "1"
+    except Exception as e:
+        status = "U"
+    return status
+
+def create_file(path, mode, overwrite):
+    try:
+        with open(path, mode):
+            pass
+        if mode == 'rb':
+            status = "8"
+        else:
+            status = "0"
+    except FileExistsError:
+        if overwrite == True:
+            try:
+                with open(path, "wb"):
+                    pass
+                status = "0"
+            except PermissionError:
+                status = "2"
+            except Exception:
+                status = "U"
+        else:
+            status = "8"
+    except IsADirectoryError:
+        status = "3"
+    except PermissionError:
+        status = "2"
+    except FileNotFoundError:
+        status = "1"
+    except Exception:
+        status = "U"
+    print(status)
+    return status
+
 def main():
     try:
         cmd = recv_msg(server_socket)
@@ -112,7 +178,11 @@ def main():
                 except PermissionError:
                     status = "2"
                 except NotADirectoryError:
-                    status = "4"
+                    server_socket.send(bytes("4", "utf-8"))
+                    if cmd[2] == False:
+                        send_msg(server_socket, pickle.dumps([path]))
+                    else:
+                        send_msg(server_socket, pickle.dumps([[path, os.stat(path), False]]))
                 except Exception:
                     status = "U"
                 finally:
@@ -173,6 +243,24 @@ def main():
                     status = "U"
                 finally:
                     server_socket.send(status.encode('UTF-8'))
+            elif cmd[0] == "make":
+                path = cmd[1]
+                directory = cmd[2]
+                overwrite = cmd[3]
+                if directory == True:
+                    status = create_directory(path, overwrite)
+                else:
+                    if overwrite == True:
+                        status = create_file(path, 'wb', overwrite)
+                    else:
+                        if os.path.exists(path) == True:
+                            mode = 'rb'
+                        else:
+                            mode = 'wb'
+                        status = create_file(path, mode, overwrite)
+
+
+                server_socket.send(status.encode('UTF-8'))
         except Exception:
             return
 
